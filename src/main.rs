@@ -1,13 +1,10 @@
-use std::{fs, path::Path, time::Duration, sync::Arc, net::SocketAddr, error::Error, collections::HashMap};
-use axum::{
-    routing::get,
-    Router,
-    response::IntoResponse,
-    extract::State,
+use axum::{extract::State, response::IntoResponse, routing::get, Router};
+use parking_lot::RwLock;
+use prometheus::{Encoder, Gauge, Opts, Registry, TextEncoder};
+use std::{
+    collections::HashMap, error::Error, fs, net::SocketAddr, path::Path, sync::Arc, time::Duration,
 };
 use tokio::time;
-use parking_lot::RwLock;
-use prometheus::{TextEncoder, Registry, Gauge, Encoder, Opts};
 
 #[derive(Clone)]
 struct AppState {
@@ -25,16 +22,13 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 fn read_temperature(device_path: &Path) -> Result<f64, Box<dyn Error>> {
     let content = fs::read_to_string(device_path.join("w1_slave"))?;
-    let temp_line = content
-        .lines()
-        .nth(1)
-        .ok_or("Temperature data not found")?;
-    
+    let temp_line = content.lines().nth(1).ok_or("Temperature data not found")?;
+
     let temp_str = temp_line
         .split("t=")
         .nth(1)
         .ok_or("Temperature value not found")?;
-    
+
     let temp_raw: i32 = temp_str.parse()?;
     Ok(temp_raw as f64 / 1000.0)
 }
@@ -46,12 +40,7 @@ async fn update_temperatures(devices_path: &Path, state: AppState) {
                 let mut gauges = state.temperature_gauges.write();
                 let sensors = entries
                     .filter_map(Result::ok)
-                    .filter(|entry| {
-                        entry
-                            .file_name()
-                            .to_string_lossy()
-                            .starts_with("28-")
-                    });
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("28-"));
 
                 for sensor in sensors {
                     let sensor_name = sensor.file_name().to_string_lossy().into_owned();
@@ -68,17 +57,19 @@ async fn update_temperatures(devices_path: &Path, state: AppState) {
                                 state.registry.register(Box::new(gauge.clone())).unwrap();
                                 gauge
                             });
-                            
+
                             gauge.set(temp);
                             println!("Temperature for {}: {:.3}°C", sensor_name, temp);
                         }
-                        Err(e) => eprintln!("Failed to read temperature from {}: {}", sensor_name, e),
+                        Err(e) => {
+                            eprintln!("Failed to read temperature from {}: {}", sensor_name, e)
+                        }
                     }
                 }
             }
             Err(e) => eprintln!("Failed to read devices directory: {}", e),
         }
-        
+
         time::sleep(Duration::from_secs(60)).await;
     }
 }

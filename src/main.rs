@@ -1,8 +1,12 @@
+mod airthings;
+
+use airthings::{AirthingsClient, AirthingsConfig};
 use axum::{extract::State, response::IntoResponse, routing::get, Router};
 use parking_lot::RwLock;
 use prometheus::{Encoder, Gauge, Opts, Registry, TextEncoder};
 use std::{
-    collections::HashMap, error::Error, fs, net::SocketAddr, path::Path, sync::Arc, time::Duration,
+    collections::HashMap, env, error::Error, fs, net::SocketAddr, path::Path, sync::Arc,
+    time::Duration,
 };
 use tokio::time;
 
@@ -10,6 +14,7 @@ use tokio::time;
 struct AppState {
     registry: Arc<Registry>,
     temperature_gauges: Arc<RwLock<HashMap<String, Gauge>>>,
+    airthings_gauges: Arc<RwLock<HashMap<String, Gauge>>>,
 }
 
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
@@ -74,6 +79,107 @@ async fn update_temperatures(devices_path: &Path, state: AppState) {
     }
 }
 
+fn sanitize_label_value(value: &str) -> String {
+    // Replace characters that might cause issues in Prometheus labels
+    // While Prometheus allows most characters in label values, we sanitize for safety
+    value
+        .trim()
+        .replace(' ', "_")
+        .replace('"', "")
+        .replace('\\', "")
+        .replace('\n', "")
+        .replace('\r', "")
+}
+
+async fn update_airthings(mut client: AirthingsClient, state: AppState) {
+    loop {
+        match client.get_devices().await {
+            Ok(devices) => {
+                let serial_numbers: Vec<String> = devices.iter().map(|d| d.id.clone()).collect();
+
+                // Build device metadata lookups
+                let device_info: HashMap<String, (String, String)> = devices
+                    .iter()
+                    .map(|d| (d.id.clone(), (d.device_type.clone(), d.name.clone())))
+                    .collect();
+
+                match client.get_sensors(&serial_numbers).await {
+                    Ok(sensors_data) => {
+                        let mut gauges = state.airthings_gauges.write();
+
+                        for device_sensors in sensors_data {
+                            let (device_type, device_name_raw) = device_info
+                                .get(&device_sensors.serial_number)
+                                .map(|(t, n)| (t.as_str(), n.as_str()))
+                                .unwrap_or(("unknown", "unknown"));
+
+                            let device_name = sanitize_label_value(device_name_raw);
+
+                            // Update battery gauge if available
+                            if let Some(battery) = device_sensors.battery_percentage {
+                                let key = format!(
+                                    "{}_airthings_battery_percent",
+                                    device_sensors.serial_number
+                                );
+                                let gauge = gauges.entry(key).or_insert_with(|| {
+                                    let opts = Opts::new(
+                                        "airthings_battery_percent",
+                                        "Battery level percentage",
+                                    )
+                                    .const_label("device_id", &device_sensors.serial_number)
+                                    .const_label("device_type", device_type)
+                                    .const_label("device_name", &device_name);
+                                    let gauge = Gauge::with_opts(opts).unwrap();
+                                    state.registry.register(Box::new(gauge.clone())).unwrap();
+                                    gauge
+                                });
+                                gauge.set(battery as f64);
+                                println!(
+                                    "Battery for {} ({}): {}%",
+                                    device_name, device_sensors.serial_number, battery
+                                );
+                            }
+
+                            // Process each sensor reading
+                            for sensor in device_sensors.sensors {
+                                let metric_name = format!("airthings_{}", sensor.sensor_type);
+                                let key =
+                                    format!("{}_{}", device_sensors.serial_number, metric_name);
+
+                                let gauge = gauges.entry(key).or_insert_with(|| {
+                                    let help = format!("{} in {}", sensor.sensor_type, sensor.unit);
+                                    let opts = Opts::new(&metric_name, &help)
+                                        .const_label("device_id", &device_sensors.serial_number)
+                                        .const_label("device_type", device_type)
+                                        .const_label("device_name", &device_name);
+                                    let gauge = Gauge::with_opts(opts).unwrap();
+                                    state.registry.register(Box::new(gauge.clone())).unwrap();
+                                    gauge
+                                });
+
+                                gauge.set(sensor.value);
+                                println!(
+                                    "{} for {} ({}): {:.2} {}",
+                                    sensor.sensor_type,
+                                    device_name,
+                                    device_sensors.serial_number,
+                                    sensor.value,
+                                    sensor.unit
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("Failed to get sensors: {}", e),
+                }
+            }
+            Err(e) => eprintln!("Failed to get Airthings devices: {}", e),
+        }
+
+        // Update every 5 minutes (Airthings data is updated every 5 minutes)
+        time::sleep(Duration::from_secs(300)).await;
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("Starting temperature monitoring service");
@@ -81,13 +187,34 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = AppState {
         registry: Arc::new(Registry::new()),
         temperature_gauges: Arc::new(RwLock::new(HashMap::new())),
+        airthings_gauges: Arc::new(RwLock::new(HashMap::new())),
     };
 
+    // Spawn w1-gpio temperature sensor monitoring
     let devices_path = "/sys/bus/w1/devices";
     let app_state = state.clone();
     tokio::spawn(async move {
         update_temperatures(Path::new(devices_path), app_state).await;
     });
+
+    // Spawn Airthings monitoring if credentials are provided
+    if let (Ok(client_id), Ok(client_secret)) = (
+        env::var("AIRTHINGS_CLIENT_ID"),
+        env::var("AIRTHINGS_CLIENT_SECRET"),
+    ) {
+        println!("Airthings credentials found, starting Airthings monitoring");
+        let config = AirthingsConfig {
+            client_id,
+            client_secret,
+        };
+        let client = AirthingsClient::new(config);
+        let app_state = state.clone();
+        tokio::spawn(async move {
+            update_airthings(client, app_state).await;
+        });
+    } else {
+        println!("Airthings credentials not found (AIRTHINGS_CLIENT_ID, AIRTHINGS_CLIENT_SECRET), skipping Airthings monitoring");
+    }
 
     let app = Router::new()
         .route("/metrics", get(metrics_handler))

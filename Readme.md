@@ -34,15 +34,18 @@ The exporter provides the following metrics at `http://localhost:9091/metrics`:
 - `temperature_celsius{sensor="<sensor_id>"}` - Temperature in degrees Celsius
 
 ### Airthings Sensors
-- `airthings_temperature_celsius{device_id="<id>", device_type="<type>"}` - Temperature in °C
-- `airthings_humidity_percent{device_id="<id>", device_type="<type>"}` - Relative humidity in %
-- `airthings_co2_ppm{device_id="<id>", device_type="<type>"}` - CO2 concentration in ppm
-- `airthings_voc_ppb{device_id="<id>", device_type="<type>"}` - VOC concentration in ppb
-- `airthings_pressure_hpa{device_id="<id>", device_type="<type>"}` - Atmospheric pressure in hPa
-- `airthings_radon_bqm3{device_id="<id>", device_type="<type>"}` - Radon short term average in Bq/m³
-- `airthings_pm1_ugm3{device_id="<id>", device_type="<type>"}` - PM1 particulate matter in µg/m³
-- `airthings_pm25_ugm3{device_id="<id>", device_type="<type>"}` - PM2.5 particulate matter in µg/m³
-- `airthings_battery_percent{device_id="<id>", device_type="<type>"}` - Battery level in %
+Metrics are dynamically created based on the sensors available for each device. Common metrics include:
+- `airthings_temp{device_id="<id>", device_type="<type>"}` - Temperature
+- `airthings_humidity{device_id="<id>", device_type="<type>"}` - Relative humidity
+- `airthings_co2{device_id="<id>", device_type="<type>"}` - CO2 concentration
+- `airthings_voc{device_id="<id>", device_type="<type>"}` - Volatile Organic Compounds
+- `airthings_pressure{device_id="<id>", device_type="<type>"}` - Atmospheric pressure
+- `airthings_radonShortTermAvg{device_id="<id>", device_type="<type>"}` - Radon short term average
+- `airthings_pm1{device_id="<id>", device_type="<type>"}` - PM1 particulate matter
+- `airthings_pm25{device_id="<id>", device_type="<type>"}` - PM2.5 particulate matter
+- `airthings_battery_percent{device_id="<id>", device_type="<type>"}` - Battery level
+
+Available sensors vary by device type. The metric names match the sensor types returned by the Airthings API.
 
 ## Running
 

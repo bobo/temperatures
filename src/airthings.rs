@@ -91,12 +91,7 @@ impl AirthingsClient {
             ("scope", "read:device:current_values"),
         ];
 
-        let response = self
-            .client
-            .post(TOKEN_URL)
-            .form(&params)
-            .send()
-            .await?;
+        let response = self.client.post(TOKEN_URL).form(&params).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();

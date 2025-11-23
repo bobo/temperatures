@@ -35,17 +35,17 @@ The exporter provides the following metrics at `http://localhost:9091/metrics`:
 
 ### Airthings Sensors
 Metrics are dynamically created based on the sensors available for each device. Common metrics include:
-- `airthings_temp{device_id="<id>", device_type="<type>"}` - Temperature
-- `airthings_humidity{device_id="<id>", device_type="<type>"}` - Relative humidity
-- `airthings_co2{device_id="<id>", device_type="<type>"}` - CO2 concentration
-- `airthings_voc{device_id="<id>", device_type="<type>"}` - Volatile Organic Compounds
-- `airthings_pressure{device_id="<id>", device_type="<type>"}` - Atmospheric pressure
-- `airthings_radonShortTermAvg{device_id="<id>", device_type="<type>"}` - Radon short term average
-- `airthings_pm1{device_id="<id>", device_type="<type>"}` - PM1 particulate matter
-- `airthings_pm25{device_id="<id>", device_type="<type>"}` - PM2.5 particulate matter
-- `airthings_battery_percent{device_id="<id>", device_type="<type>"}` - Battery level
+- `airthings_temp{device_id="<id>", device_type="<type>", device_name="<name>"}` - Temperature
+- `airthings_humidity{device_id="<id>", device_type="<type>", device_name="<name>"}` - Relative humidity
+- `airthings_co2{device_id="<id>", device_type="<type>", device_name="<name>"}` - CO2 concentration
+- `airthings_voc{device_id="<id>", device_type="<type>", device_name="<name>"}` - Volatile Organic Compounds
+- `airthings_pressure{device_id="<id>", device_type="<type>", device_name="<name>"}` - Atmospheric pressure
+- `airthings_radonShortTermAvg{device_id="<id>", device_type="<type>", device_name="<name>"}` - Radon short term average
+- `airthings_pm1{device_id="<id>", device_type="<type>", device_name="<name>"}` - PM1 particulate matter
+- `airthings_pm25{device_id="<id>", device_type="<type>", device_name="<name>"}` - PM2.5 particulate matter
+- `airthings_battery_percent{device_id="<id>", device_type="<type>", device_name="<name>"}` - Battery level
 
-Available sensors vary by device type. The metric names match the sensor types returned by the Airthings API.
+Available sensors vary by device type. The metric names match the sensor types returned by the Airthings API. Each metric includes the device name for easy identification in Grafana and other monitoring tools.
 
 ## Running
 

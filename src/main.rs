@@ -79,16 +79,28 @@ async fn update_temperatures(devices_path: &Path, state: AppState) {
     }
 }
 
+fn sanitize_label_value(value: &str) -> String {
+    // Replace characters that might cause issues in Prometheus labels
+    // While Prometheus allows most characters in label values, we sanitize for safety
+    value
+        .trim()
+        .replace(' ', "_")
+        .replace('"', "")
+        .replace('\\', "")
+        .replace('\n', "")
+        .replace('\r', "")
+}
+
 async fn update_airthings(mut client: AirthingsClient, state: AppState) {
     loop {
         match client.get_devices().await {
             Ok(devices) => {
                 let serial_numbers: Vec<String> = devices.iter().map(|d| d.id.clone()).collect();
 
-                // Build device type lookup
-                let device_types: HashMap<String, String> = devices
+                // Build device metadata lookups
+                let device_info: HashMap<String, (String, String)> = devices
                     .iter()
-                    .map(|d| (d.id.clone(), d.device_type.clone()))
+                    .map(|d| (d.id.clone(), (d.device_type.clone(), d.name.clone())))
                     .collect();
 
                 match client.get_sensors(&serial_numbers).await {
@@ -96,10 +108,12 @@ async fn update_airthings(mut client: AirthingsClient, state: AppState) {
                         let mut gauges = state.airthings_gauges.write();
 
                         for device_sensors in sensors_data {
-                            let device_type = device_types
+                            let (device_type, device_name_raw) = device_info
                                 .get(&device_sensors.serial_number)
-                                .map(|s| s.as_str())
-                                .unwrap_or("unknown");
+                                .map(|(t, n)| (t.as_str(), n.as_str()))
+                                .unwrap_or(("unknown", "unknown"));
+
+                            let device_name = sanitize_label_value(device_name_raw);
 
                             // Update battery gauge if available
                             if let Some(battery) = device_sensors.battery_percentage {
@@ -113,15 +127,16 @@ async fn update_airthings(mut client: AirthingsClient, state: AppState) {
                                         "Battery level percentage",
                                     )
                                     .const_label("device_id", &device_sensors.serial_number)
-                                    .const_label("device_type", device_type);
+                                    .const_label("device_type", device_type)
+                                    .const_label("device_name", &device_name);
                                     let gauge = Gauge::with_opts(opts).unwrap();
                                     state.registry.register(Box::new(gauge.clone())).unwrap();
                                     gauge
                                 });
                                 gauge.set(battery as f64);
                                 println!(
-                                    "Battery for device {}: {}%",
-                                    device_sensors.serial_number, battery
+                                    "Battery for {} ({}): {}%",
+                                    device_name, device_sensors.serial_number, battery
                                 );
                             }
 
@@ -135,7 +150,8 @@ async fn update_airthings(mut client: AirthingsClient, state: AppState) {
                                     let help = format!("{} in {}", sensor.sensor_type, sensor.unit);
                                     let opts = Opts::new(&metric_name, &help)
                                         .const_label("device_id", &device_sensors.serial_number)
-                                        .const_label("device_type", device_type);
+                                        .const_label("device_type", device_type)
+                                        .const_label("device_name", &device_name);
                                     let gauge = Gauge::with_opts(opts).unwrap();
                                     state.registry.register(Box::new(gauge.clone())).unwrap();
                                     gauge
@@ -143,8 +159,9 @@ async fn update_airthings(mut client: AirthingsClient, state: AppState) {
 
                                 gauge.set(sensor.value);
                                 println!(
-                                    "{} for device {}: {:.2} {}",
+                                    "{} for {} ({}): {:.2} {}",
                                     sensor.sensor_type,
+                                    device_name,
                                     device_sensors.serial_number,
                                     sensor.value,
                                     sensor.unit

@@ -49,7 +49,6 @@ pub struct Device {
     pub device_type: String,
     #[allow(dead_code)]
     pub sensors: Vec<String>,
-    #[allow(dead_code)]
     pub name: String,
     #[allow(dead_code)]
     pub home: Option<String>,

@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 type BoxError = Box<dyn Error + Send + Sync>;
 
 const TOKEN_URL: &str = "https://accounts-api.airthings.com/v1/token";
-const API_BASE_URL: &str = "https://ext-api.airthings.com/v1";
+const API_BASE_URL: &str = "https://consumer-api.airthings.com/v1";
 
 #[derive(Debug, Clone)]
 pub struct AirthingsConfig {
@@ -27,6 +27,16 @@ struct AccessToken {
 }
 
 #[derive(Debug, Deserialize)]
+struct AccountsResponse {
+    accounts: Vec<AccountResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountResponse {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct DevicesResponse {
     devices: Vec<Device>,
 }
@@ -39,31 +49,40 @@ pub struct Device {
     pub device_type: String,
     #[allow(dead_code)]
     pub sensors: Vec<String>,
+    #[allow(dead_code)]
+    pub name: String,
+    #[allow(dead_code)]
+    pub home: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct DeviceLatestSamples {
-    pub data: SampleData,
+struct SensorsResponse {
+    results: Vec<DeviceSensors>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SampleData {
-    pub battery: Option<f64>,
-    pub co2: Option<f64>,
-    pub humidity: Option<f64>,
-    pub pm1: Option<f64>,
-    pub pm25: Option<f64>,
-    pub pressure: Option<f64>,
-    pub radon_short_term_avg: Option<f64>,
-    pub temp: Option<f64>,
-    pub voc: Option<f64>,
+pub struct DeviceSensors {
+    pub serial_number: String,
+    pub sensors: Vec<SensorResponse>,
+    #[allow(dead_code)]
+    pub battery_percentage: Option<i32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SensorResponse {
+    pub sensor_type: String,
+    pub value: f64,
+    #[allow(dead_code)]
+    pub unit: String,
 }
 
 pub struct AirthingsClient {
     config: AirthingsConfig,
     client: Client,
     access_token: Option<AccessToken>,
+    account_id: Option<String>,
 }
 
 impl AirthingsClient {
@@ -72,6 +91,7 @@ impl AirthingsClient {
             config,
             client: Client::new(),
             access_token: None,
+            account_id: None,
         }
     }
 
@@ -110,12 +130,53 @@ impl AirthingsClient {
         Ok(token_response.access_token)
     }
 
-    pub async fn get_devices(&mut self) -> Result<Vec<Device>, BoxError> {
+    async fn get_account_id(&mut self) -> Result<String, BoxError> {
+        // Return cached account ID if available
+        if let Some(account_id) = &self.account_id {
+            return Ok(account_id.clone());
+        }
+
         let token = self.get_access_token().await?;
 
         let response = self
             .client
-            .get(format!("{}/devices", API_BASE_URL))
+            .get(format!("{}/accounts", API_BASE_URL))
+            .bearer_auth(&token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await?;
+            return Err(format!("Failed to get accounts: {} - {}", status, text).into());
+        }
+
+        let text = response.text().await?;
+        let accounts_response: AccountsResponse = serde_json::from_str(&text).map_err(|e| {
+            format!(
+                "Failed to parse accounts response: {}. Response body: {}",
+                e, text
+            )
+        })?;
+
+        let account_id = accounts_response
+            .accounts
+            .first()
+            .ok_or("No accounts found")?
+            .id
+            .clone();
+
+        self.account_id = Some(account_id.clone());
+        Ok(account_id)
+    }
+
+    pub async fn get_devices(&mut self) -> Result<Vec<Device>, BoxError> {
+        let account_id = self.get_account_id().await?;
+        let token = self.get_access_token().await?;
+
+        let response = self
+            .client
+            .get(format!("{}/accounts/{}/devices", API_BASE_URL, account_id))
             .bearer_auth(&token)
             .send()
             .await?;
@@ -136,39 +197,41 @@ impl AirthingsClient {
         Ok(devices_response.devices)
     }
 
-    pub async fn get_latest_samples(
+    pub async fn get_sensors(
         &mut self,
-        device_id: &str,
-    ) -> Result<DeviceLatestSamples, BoxError> {
+        serial_numbers: &[String],
+    ) -> Result<Vec<DeviceSensors>, BoxError> {
+        let account_id = self.get_account_id().await?;
         let token = self.get_access_token().await?;
 
-        let response = self
-            .client
-            .get(format!(
-                "{}/devices/{}/latest-samples",
-                API_BASE_URL, device_id
-            ))
-            .bearer_auth(&token)
-            .send()
-            .await?;
+        let mut url = format!("{}/accounts/{}/sensors", API_BASE_URL, account_id);
+
+        // Add serial numbers as query parameters
+        if !serial_numbers.is_empty() {
+            url.push('?');
+            for (i, sn) in serial_numbers.iter().enumerate() {
+                if i > 0 {
+                    url.push('&');
+                }
+                url.push_str(&format!("sn={}", sn));
+            }
+        }
+
+        let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await?;
-            return Err(format!(
-                "Failed to get latest samples for device {}: {} - {}",
-                device_id, status, text
-            )
-            .into());
+            return Err(format!("Failed to get sensors: {} - {}", status, text).into());
         }
 
         let text = response.text().await?;
-        let samples: DeviceLatestSamples = serde_json::from_str(&text).map_err(|e| {
+        let sensors_response: SensorsResponse = serde_json::from_str(&text).map_err(|e| {
             format!(
-                "Failed to parse latest samples for device {}: {}. Response body: {}",
-                device_id, e, text
+                "Failed to parse sensors response: {}. Response body: {}",
+                e, text
             )
         })?;
-        Ok(samples)
+        Ok(sensors_response.results)
     }
 }

@@ -83,96 +83,76 @@ async fn update_airthings(mut client: AirthingsClient, state: AppState) {
     loop {
         match client.get_devices().await {
             Ok(devices) => {
-                for device in devices {
-                    match client.get_latest_samples(&device.id).await {
-                        Ok(samples) => {
-                            let mut gauges = state.airthings_gauges.write();
-                            let data = samples.data;
+                let serial_numbers: Vec<String> = devices.iter().map(|d| d.id.clone()).collect();
 
-                            // Helper macro to create/update gauge
-                            macro_rules! update_gauge {
-                                ($field:expr, $name:expr, $help:expr, $unit:expr) => {
-                                    if let Some(value) = $field {
-                                        let key = format!("{}_{}", device.id, $name);
-                                        let gauge = gauges.entry(key).or_insert_with(|| {
-                                            let opts = Opts::new($name, $help)
-                                                .const_label("device_id", &device.id)
-                                                .const_label("device_type", &device.device_type);
-                                            let gauge = Gauge::with_opts(opts).unwrap();
-                                            state
-                                                .registry
-                                                .register(Box::new(gauge.clone()))
-                                                .unwrap();
-                                            gauge
-                                        });
-                                        gauge.set(value);
-                                        println!(
-                                            "{} for device {}: {:.2} {}",
-                                            $name, device.id, value, $unit
-                                        );
-                                    }
-                                };
+                // Build device type lookup
+                let device_types: HashMap<String, String> = devices
+                    .iter()
+                    .map(|d| (d.id.clone(), d.device_type.clone()))
+                    .collect();
+
+                match client.get_sensors(&serial_numbers).await {
+                    Ok(sensors_data) => {
+                        let mut gauges = state.airthings_gauges.write();
+
+                        for device_sensors in sensors_data {
+                            let device_type = device_types
+                                .get(&device_sensors.serial_number)
+                                .map(|s| s.as_str())
+                                .unwrap_or("unknown");
+
+                            // Update battery gauge if available
+                            if let Some(battery) = device_sensors.battery_percentage {
+                                let key = format!(
+                                    "{}_airthings_battery_percent",
+                                    device_sensors.serial_number
+                                );
+                                let gauge = gauges.entry(key).or_insert_with(|| {
+                                    let opts = Opts::new(
+                                        "airthings_battery_percent",
+                                        "Battery level percentage",
+                                    )
+                                    .const_label("device_id", &device_sensors.serial_number)
+                                    .const_label("device_type", device_type);
+                                    let gauge = Gauge::with_opts(opts).unwrap();
+                                    state.registry.register(Box::new(gauge.clone())).unwrap();
+                                    gauge
+                                });
+                                gauge.set(battery as f64);
+                                println!(
+                                    "Battery for device {}: {}%",
+                                    device_sensors.serial_number, battery
+                                );
                             }
 
-                            update_gauge!(
-                                data.temp,
-                                "airthings_temperature_celsius",
-                                "Temperature reading in degrees Celsius",
-                                "°C"
-                            );
-                            update_gauge!(
-                                data.humidity,
-                                "airthings_humidity_percent",
-                                "Relative humidity percentage",
-                                "%"
-                            );
-                            update_gauge!(
-                                data.co2,
-                                "airthings_co2_ppm",
-                                "CO2 concentration in parts per million",
-                                "ppm"
-                            );
-                            update_gauge!(
-                                data.voc,
-                                "airthings_voc_ppb",
-                                "Volatile Organic Compounds in parts per billion",
-                                "ppb"
-                            );
-                            update_gauge!(
-                                data.pressure,
-                                "airthings_pressure_hpa",
-                                "Atmospheric pressure in hectopascals",
-                                "hPa"
-                            );
-                            update_gauge!(
-                                data.radon_short_term_avg,
-                                "airthings_radon_bqm3",
-                                "Radon short term average in Bq/m³",
-                                "Bq/m³"
-                            );
-                            update_gauge!(
-                                data.pm1,
-                                "airthings_pm1_ugm3",
-                                "PM1 particulate matter in µg/m³",
-                                "µg/m³"
-                            );
-                            update_gauge!(
-                                data.pm25,
-                                "airthings_pm25_ugm3",
-                                "PM2.5 particulate matter in µg/m³",
-                                "µg/m³"
-                            );
-                            update_gauge!(
-                                data.battery,
-                                "airthings_battery_percent",
-                                "Battery level percentage",
-                                "%"
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to get samples for device {}: {}", device.id, e)
+                            // Process each sensor reading
+                            for sensor in device_sensors.sensors {
+                                let metric_name = format!("airthings_{}", sensor.sensor_type);
+                                let key =
+                                    format!("{}_{}", device_sensors.serial_number, metric_name);
+
+                                let gauge = gauges.entry(key).or_insert_with(|| {
+                                    let help = format!("{} in {}", sensor.sensor_type, sensor.unit);
+                                    let opts = Opts::new(&metric_name, &help)
+                                        .const_label("device_id", &device_sensors.serial_number)
+                                        .const_label("device_type", device_type);
+                                    let gauge = Gauge::with_opts(opts).unwrap();
+                                    state.registry.register(Box::new(gauge.clone())).unwrap();
+                                    gauge
+                                });
+
+                                gauge.set(sensor.value);
+                                println!(
+                                    "{} for device {}: {:.2} {}",
+                                    sensor.sensor_type,
+                                    device_sensors.serial_number,
+                                    sensor.value,
+                                    sensor.unit
+                                );
+                            }
                         }
                     }
+                    Err(e) => eprintln!("Failed to get sensors: {}", e),
                 }
             }
             Err(e) => eprintln!("Failed to get Airthings devices: {}", e),

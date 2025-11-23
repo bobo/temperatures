@@ -27,18 +27,18 @@ struct AccessToken {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Device {
-    pub id: String,
-    #[serde(rename = "deviceType")]
-    pub device_type: String,
-    pub sensors: Vec<Sensor>,
+struct DevicesResponse {
+    devices: Vec<Device>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Sensor {
+pub struct Device {
+    #[serde(rename = "serialNumber")]
     pub id: String,
     #[serde(rename = "type")]
-    pub sensor_type: String,
+    pub device_type: String,
+    #[allow(dead_code)]
+    pub sensors: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,8 +126,14 @@ impl AirthingsClient {
             return Err(format!("Failed to get devices: {} - {}", status, text).into());
         }
 
-        let devices: Vec<Device> = response.json().await?;
-        Ok(devices)
+        let text = response.text().await?;
+        let devices_response: DevicesResponse = serde_json::from_str(&text).map_err(|e| {
+            format!(
+                "Failed to parse devices response: {}. Response body: {}",
+                e, text
+            )
+        })?;
+        Ok(devices_response.devices)
     }
 
     pub async fn get_latest_samples(
@@ -156,7 +162,13 @@ impl AirthingsClient {
             .into());
         }
 
-        let samples: DeviceLatestSamples = response.json().await?;
+        let text = response.text().await?;
+        let samples: DeviceLatestSamples = serde_json::from_str(&text).map_err(|e| {
+            format!(
+                "Failed to parse latest samples for device {}: {}. Response body: {}",
+                device_id, e, text
+            )
+        })?;
         Ok(samples)
     }
 }
